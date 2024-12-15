@@ -2,13 +2,12 @@ import copy
 from datetime import datetime, timedelta, time
 from tabulate import tabulate
 
-# Параметры задачи
-total_buses = 8  # Пользователь указывает количество автобусов
+total_buses = int(input())  # Пользователь указывает количество автобусов
 route_duration_min = timedelta(minutes=50)  # Минимальное время маршрута (в минутах)
 route_duration_max = timedelta(minutes=70)  # Максимальное время маршрута (в минутах)
 days_of_week = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
-# Ограничения смен водителей
+# перерывы
 lunch_duration = 1  # Длительность обеденного перерыва (в часах)
 break_duration = 0.25  # Длительность коротких перерывов для типа B (в часах)
 
