@@ -2,16 +2,12 @@ import copy
 from datetime import datetime, timedelta, time
 from tabulate import tabulate
 
-total_buses = int(input())  # Пользователь указывает количество автобусов
-route_duration_min = timedelta(minutes=50)  # Минимальное время маршрута (в минутах)
-route_duration_max = timedelta(minutes=70)  # Максимальное время маршрута (в минутах)
+total_buses = int(input())  # Кол-во автобусов
+route_duration_min = timedelta(minutes=50)  # Минимальная продолжительность маршрута
+route_duration_max = timedelta(minutes=70)  # Максимальная продолжительность маршрута
 days_of_week = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
-# перерывы
-lunch_duration = 1  # Длительность обеденного перерыва (в часах)
-break_duration = 0.25  # Длительность коротких перерывов для типа B (в часах)
-
-# Часы пик и непик
+# Час пик и нагрузки
 peak_hours = [(time(hour=7), time(hour=9)), (time(hour=17), time(hour=19))]
 
 off_peak_load = 0.5
@@ -25,6 +21,7 @@ class Route:
         self.is_free = True
         self.bus_id = None
         self.driver_id = None
+        self.next_day_route = None
 
     def take_route(self, bus_id, driver_id):
         self.is_free = False
@@ -33,7 +30,7 @@ class Route:
 
 
 def create_bus_schedule():
-    bus_count_peak_hours = int(peak_load * total_buses)  # округление вниз
+    bus_count_peak_hours = int(peak_load * total_buses)  # Округление вниз
     bus_count_off_peak_hours = int(off_peak_load * total_buses)
 
     start_datetime = datetime.combine(datetime.today(), time(6))  # Начало в 6:00
@@ -74,7 +71,7 @@ def create_bus_schedule():
     return bus_schedule
 
 
-def calculate_drivers_breaks(driver_type, start):  # возвращает время начала конца перерыва
+def calculate_drivers_breaks(driver_type, start):
     breaks = []
     if driver_type == "A":
         breaks.append((start + timedelta(hours=4), start + timedelta(hours=5)))
@@ -92,26 +89,15 @@ def calculate_drivers_breaks(driver_type, start):  # возвращает вре
 
 def can_get_route(route, breaks):
     for break_ in breaks:
-        # Проверяем на пересечение
         if not (route.end <= break_[0] or route.start >= break_[1]):
-            return False  # Пересечение найдено
-    return True  # Пересечений нет
+            return False
+    return True
 
 
-def get_driver_week_schedule(schedule, start_route, driver_id, driver_type,
-                             bus_id):
+def get_driver_week_schedule(schedule, start_route, start_day, driver_id, driver_type, bus_id):
     week_driver_routes = {}
-
     start_route.take_route(bus_id, driver_id)
 
-    start_day = None
-    for day, routes in schedule.items():
-        if start_day is not None:
-            break
-        for route in routes:
-            if route.start == start_route.start:
-                start_day = day
-                break
     start_day_idx = days_of_week.index(start_day)
     weekends = []
     if driver_type == "A":
@@ -120,19 +106,20 @@ def get_driver_week_schedule(schedule, start_route, driver_id, driver_type,
     else:
         shift_ending = start_route.start + timedelta(hours=12)
         work_days = []
-        while start_day_idx <= len(days_of_week[1:]) - 1:
+        while start_day_idx <= len(days_of_week[1:]):
             work_days.append(days_of_week[start_day_idx])
             start_day_idx += 3
         weekends.extend([i for i in days_of_week if i not in work_days])
 
     for day, routes in schedule.items():
-        if day in weekends and driver_type == "A":
+        if day in weekends:
             continue
 
         driver_routes = []
+        if day == start_day:
+            driver_routes.append(start_route)
         breaks = calculate_drivers_breaks(driver_type, start_route.start)
         for route in routes:
-
             if route.start == start_route.start and route.end == start_route.end and route.is_free:
                 driver_routes.append(route)
                 route.take_route(bus_id, driver_id)
@@ -143,14 +130,12 @@ def get_driver_week_schedule(schedule, start_route, driver_id, driver_type,
             if route.start >= shift_ending or route.end >= shift_ending:
                 break
 
-            if driver_routes:
-                if driver_routes[-1].end <= route.start and can_get_route(route, breaks):
-                    driver_routes.append(route)
-                    route.take_route(bus_id=bus_id, driver_id=driver_id)
+            if driver_routes and driver_routes[-1].end <= route.start and can_get_route(route, breaks):
+                driver_routes.append(route)
+                route.take_route(bus_id=bus_id, driver_id=driver_id)
 
         if driver_routes:
             week_driver_routes[day] = driver_routes
-
     return week_driver_routes
 
 
@@ -165,18 +150,16 @@ def sum_closed_routes(schedule):
 
 def create_schedule():
     drivers = []
-    days_of_week.insert(0, "фантомный пон")
     buses = {}
     for day in days_of_week:
         day_buses = {}
-        for i in range(total_buses):  # Индексы автобуса
+        for i in range(total_buses):
             day_buses[i] = (datetime.combine(datetime.today(), time(hour=6)),
                             datetime.combine(datetime.today(), time(hour=6)))
         buses[day] = day_buses
 
     bus_schedule = create_bus_schedule()
     for day, routes in bus_schedule.items():
-
         for route in routes:
             if not route.is_free:
                 continue
@@ -186,17 +169,21 @@ def create_schedule():
                     if all(not (st[1] <= route.start or st[0] >= route.end) for st in buses[day].values()):
                         route.is_free = False
                     continue
-                if shift_time[1] <= route.start:
 
+                if shift_time[1] <= route.start:
                     test_schedule = copy.deepcopy(bus_schedule)
                     test_driver = get_driver_week_schedule(schedule=test_schedule, driver_id=len(drivers) + 1,
-                                                           driver_type="A", bus_id=bus_id, start_route=route) #для тестов
+                                                           driver_type="A", bus_id=bus_id, start_route=route,
+                                                           start_day=day)
+
                     if sum_closed_routes(bus_schedule) == sum_closed_routes(test_schedule):
                         driver = get_driver_week_schedule(schedule=bus_schedule, driver_id=len(drivers) + 1,
-                                                          driver_type="B", bus_id=bus_id, start_route=route)
+                                                          driver_type="B", bus_id=bus_id, start_route=route,
+                                                          start_day=day)
                     else:
                         driver = get_driver_week_schedule(schedule=bus_schedule, driver_id=len(drivers) + 1,
-                                                          driver_type="A", bus_id=bus_id, start_route=route)
+                                                          driver_type="A", bus_id=bus_id, start_route=route,
+                                                          start_day=day)
 
                     if list(driver.values()):
                         driver_start = list(driver.values())[0][0].start
@@ -204,16 +191,13 @@ def create_schedule():
                         buses[day][bus_id] = (driver_start, driver_end)
                         drivers.append(driver)
                         break
-                else:
-                    continue
 
     return bus_schedule
+
 
 def display_schedule(bus_schedule):
     table = []
     for day, routes in bus_schedule.items():
-        if day == "фантомный пон":
-            continue
         table.append([f"=== {day.upper()} ===", "", "", ""])
         for route in routes:
             table.append([
@@ -222,13 +206,11 @@ def display_schedule(bus_schedule):
                 f"Конец: {route.end.strftime('%H:%M')}",
                 f"Автобус: {route.bus_id}"
             ])
-        table.append(["", "", "", ""])  # Пустая строка для разделения дней
+        table.append(["", "", "", ""])
 
     print(tabulate(table, headers=["Водитель", "Начало", "Конец", "Автобус"], tablefmt="grid"))
 
 
-# Генерация расписания и вывод в виде таблицы
+# Генерация расписания и вывод заполненного расписания в таблице
 bus_schedule = create_bus_schedule()
 display_schedule(create_schedule())
-
-

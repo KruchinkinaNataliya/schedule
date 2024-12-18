@@ -1,23 +1,26 @@
-import random
 import copy
 from datetime import datetime, timedelta, time
+import random
 from tabulate import tabulate
 
-total_buses = int(input())
-route_duration_min = timedelta(minutes=50)
-route_duration_max = timedelta(minutes=70)
-route_time = (route_duration_min + route_duration_max) / 2
+total_buses = int(input())  # Кол-во автобусов
+route_duration_min = timedelta(minutes=50)  # Минимальная продолжительность маршрута
+route_duration_max = timedelta(minutes=70)  # Максимальная продолжительность маршрута
 days_of_week = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
-# ограничения смен водителей
-shift_duration = {"A": 8, "B": 12}
-lunch_duration = 1
-break_duration = 0.25
+shift_duration = {0: "A", 1: "B"}  # Тип водителя
 
-# Часы пик и непик
+# Час пик и нагрузки
 peak_hours = [(time(hour=7), time(hour=9)), (time(hour=17), time(hour=19))]
+
 off_peak_load = 0.5
 peak_load = 1
+
+population_size = 50
+generations = 25
+mutation_percent = 0.2
+min_individual_size = total_buses * 2
+max_individual_size = total_buses * 5
 
 
 class Route:
@@ -27,6 +30,7 @@ class Route:
         self.is_free = True
         self.bus_id = None
         self.driver_id = None
+        self.next_day_route = None
 
     def take_route(self, bus_id, driver_id):
         self.is_free = False
@@ -35,10 +39,10 @@ class Route:
 
 
 def create_bus_schedule():
-    bus_count_peak_hours = int(peak_load * total_buses)
+    bus_count_peak_hours = int(peak_load * total_buses)  # Округление вниз
     bus_count_off_peak_hours = int(off_peak_load * total_buses)
 
-    start_datetime = datetime.combine(datetime.today(), time(6))
+    start_datetime = datetime.combine(datetime.today(), time(6))  # Начало в 6:00
     end_datetime = datetime.combine(datetime.today(), time(3)) + timedelta(days=1)
 
     peak_start_1 = datetime.combine(start_datetime.date(), peak_hours[0][0])
@@ -76,122 +80,218 @@ def create_bus_schedule():
     return bus_schedule
 
 
-def calculate_fitness(schedule, num_drivers):
-    """
-    Функция оценки: максимизация закрытых маршрутов и минимизация количества водителей.
-    """
-    closed_routes = sum(1 for day in schedule.values() for route in day if not route.is_free)
-    fitness = closed_routes - 0.2 * num_drivers  # Уменьшение штрафа за количество водителей
-    return max(fitness, 0)  # Фитнес не может быть отрицательным
+def calculate_drivers_breaks(driver_type, start):
+    breaks = []
+    if driver_type == "A":
+        breaks.append((start + timedelta(hours=4), start + timedelta(hours=5)))
+    else:
+        current_time = start + timedelta(hours=2, minutes=15)
+        while current_time < start + timedelta(hours=12):
+            breaks.append((current_time - timedelta(minutes=15), current_time))
+            current_time += timedelta(hours=2, minutes=15)
+
+    breaks = [break_ for break_ in breaks
+              if break_[0] < datetime.combine(datetime.today(), time(3)) + timedelta(days=1) and
+              break_[1] < datetime.combine(datetime.today(), time(3)) + timedelta(days=1)]
+    return breaks
 
 
-def assign_drivers(schedule, max_drivers):
-    driver_id = 1
-    drivers = {}
+def can_get_route(route, breaks):
+    for break_ in breaks:
+        if not (route.end <= break_[0] or route.start >= break_[1]):
+            return False
+    return True
+
+
+def get_driver_week_schedule(schedule, start_route, start_day, driver_id, driver_type, bus_id):
+    week_driver_routes = {}
+    start_route.take_route(bus_id, driver_id)
+
+    start_day_idx = days_of_week.index(start_day)
+    weekends = []
+    if driver_type == "A":
+        weekends = copy.copy(days_of_week[-2:])
+        shift_ending = start_route.start + timedelta(hours=9)
+    else:
+        shift_ending = start_route.start + timedelta(hours=12)
+        work_days = []
+        while start_day_idx <= len(days_of_week[1:]):
+            work_days.append(days_of_week[start_day_idx])
+            start_day_idx += 3
+        weekends.extend([i for i in days_of_week if i not in work_days])
+
+    for day, routes in schedule.items():
+        if day in weekends:
+            continue
+
+        driver_routes = []
+        if day == start_day:
+            driver_routes.append(start_route)
+        breaks = calculate_drivers_breaks(driver_type, start_route.start)
+        for route in routes:
+            if route.start == start_route.start and route.end == start_route.end and route.is_free:
+                driver_routes.append(route)
+                route.take_route(bus_id, driver_id)
+
+            elif not route.is_free:
+                continue
+
+            if route.start >= shift_ending or route.end >= shift_ending:
+                break
+
+            if driver_routes and driver_routes[-1].end <= route.start and can_get_route(route, breaks):
+                driver_routes.append(route)
+                route.take_route(bus_id=bus_id, driver_id=driver_id)
+
+        if driver_routes:
+            week_driver_routes[day] = driver_routes
+    return week_driver_routes
+
+
+def sum_closed_routes(schedule):
+    cnt = 0
     for day, routes in schedule.items():
         for route in routes:
-            if route.is_free:  # Назначаем водителя только на свободные маршруты
-                if driver_id not in drivers:
-                    drivers[driver_id] = []
-                if len(drivers[driver_id]) < max_drivers:
-                    route.driver_id = driver_id
-                    route.is_free = False
-                    drivers[driver_id].append(route)
-                else:
-                    driver_id += 1
+            if not route.is_free:
+                cnt += 1
+    return cnt
 
 
-def mutate_schedule(schedule, num_drivers):
-    """
-    Мутирует расписание: изменяет состояние маршрутов или количество водителей.
-    """
-    mutated_schedule = copy.deepcopy(schedule)
-    for day, routes in mutated_schedule.items():
-        for route in routes:
-            if random.random() < 0.1:  # 10% шанс изменения маршрута
-                if route.is_free:
-                    route.take_route(random.randint(1, total_buses), random.randint(1, num_drivers))
-                else:
-                    route.is_free = True
-                    route.bus_id = None
-                    route.driver_id = None
-
-    # Изменение количества водителей с небольшим шансом
-    if random.random() < 0.1:  # 10% шанс изменения числа водителей
-        num_drivers += random.choice([-1, 1])
-        num_drivers = max(1, num_drivers)  # Минимум 1 водитель
-
-    return mutated_schedule, num_drivers
-
-
-def crossover_schedule(schedule1, schedule2, num_drivers1, num_drivers2):
-    """
-    Выполняет кроссовер расписаний и количества водителей.
-    """
-    new_schedule = {}
+def create_schedule(schedule, drivers):
+    buses = {}
     for day in days_of_week:
-        midpoint = len(schedule1[day]) // 2
-        new_schedule[day] = schedule1[day][:midpoint] + schedule2[day][midpoint:]
+        day_buses = {}
+        for i in range(total_buses):
+            day_buses[i] = (datetime.combine(datetime.today(), time(hour=6)),
+                            datetime.combine(datetime.today(), time(hour=6)))
+        buses[day] = day_buses
 
-    # Среднее значение количества водителей
-    new_num_drivers = (num_drivers1 + num_drivers2) // 2
-    return new_schedule, new_num_drivers
+    for day, routes in schedule.items():
+        for route in routes:
+            if not route.is_free:
+                continue
+
+            for bus_id, shift_time in buses[day].items():
+                if not (shift_time[1] <= route.start or shift_time[0] >= route.end):
+                    if all(not (st[1] <= route.start or st[0] >= route.end) for st in buses[day].values()):
+                        route.is_free = False
+                    continue
+
+                if shift_time[1] <= route.start:
+                    if drivers:
+                        gen = drivers.pop(-1)
+                        driver = get_driver_week_schedule(schedule=schedule, driver_id=len(drivers),
+                                                          driver_type=shift_duration[gen], bus_id=bus_id,
+                                                          start_route=route,
+                                                          start_day=day)
+
+                        if list(driver.values()):
+                            driver_start = list(driver.values())[0][0].start
+                            driver_end = list(driver.values())[0][-1].end
+                            buses[day][bus_id] = (driver_start, driver_end)
+                            break
+
+    return schedule
 
 
-def genetic_algorithm(initial_schedule, generations=100, population_size=50):
-    """
-    Генетический алгоритм для оптимизации расписания и количества водителей.
-    """
-    population = [(copy.deepcopy(initial_schedule), random.randint(5, 15)) for _ in range(population_size)]
-    best_schedule = None
-    best_num_drivers = 0
-    best_fitness = float('-inf')
+def fitness(individual):
+    occupied_routes = sum(individual)
 
-    for _ in range(generations):
-        fitness_scores = [calculate_fitness(schedule, num_drivers) for schedule, num_drivers in population]
+    driver_count = individual.count(1)
 
-        # Проверяем и корректируем нулевую сумму фитнесов
-        if sum(fitness_scores) == 0:
-            fitness_scores = [1 for _ in fitness_scores]  # Устанавливаем минимальные положительные значения
+    penalty = driver_count * 0.1  # Чем больше водителей, тем больше штраф
 
-        best_index = fitness_scores.index(max(fitness_scores))
-        if fitness_scores[best_index] > best_fitness:
-            best_fitness = fitness_scores[best_index]
-            best_schedule, best_num_drivers = population[best_index]
+    return occupied_routes - penalty
 
-        new_population = []
-        for _ in range(population_size // 2):
-            parent1, parent2 = random.choices(population, weights=fitness_scores, k=2)
-            child_schedule, child_num_drivers = crossover_schedule(parent1[0], parent2[0], parent1[1], parent2[1])
-            child_schedule, child_num_drivers = mutate_schedule(child_schedule, child_num_drivers)
-            new_population.extend([parent1, parent2, (child_schedule, child_num_drivers)])
+
+def sum_all_routes():
+    cnt = 0
+    for day, routes in create_bus_schedule().items():
+        for _ in routes:
+            cnt += 1
+    return cnt
+
+
+all_routes_count = sum_all_routes()
+
+base_schedule = create_bus_schedule()  # Кэшируемое расписание для более быстрого выполнения
+
+
+def tournament_selection(population, fitnesses):
+    i1, i2 = random.sample(range(len(population)), 2)
+    return population[i1] if fitnesses[i1] > fitnesses[i2] else population[i2]
+
+
+def crossover(parent1, parent2):
+    point = random.randint(0, min(len(parent1), len(parent2)) - 1)
+    child1 = parent1[:point] + parent2[point:]
+    child2 = parent2[:point] + parent1[point:]
+
+    return child1, child2
+
+
+def mutate(individual):
+    if random.random() < mutation_percent:
+        point = random.randint(0, len(individual) - 1)
+        individual[point] = 1 - individual[point]
+    return individual
+
+
+def genetic_algorithm():
+    population = initialize_population(population_size)
+
+    for generation in range(generations):
+        fitnesses = [fitness(individual) for individual in population]
+        print(f"Generation: {generation}, Best fitness: {max(fitnesses)}")
+
+        # Сохранение лучших индивидов
+        num_parents = population_size // 2
+        new_population = sorted(zip(population, fitnesses), key=lambda x: x[1], reverse=True)[:num_parents]
+        new_population = [x[0] for x in new_population]
+
+        # Выбор родителей
+        while len(new_population) < population_size:
+            parent1 = tournament_selection(population, fitnesses)
+            parent2 = tournament_selection(population, fitnesses)
+            child1, child2 = crossover(parent1, parent2)
+            new_population.append(mutate(child1))
+            new_population.append(mutate(child2))
 
         population = new_population[:population_size]
 
-    return best_schedule, best_num_drivers
+    best_individual = max(population, key=fitness)
+    return best_individual
 
 
-def display_schedule(bus_schedule, num_drivers):
-    """
-    Вывод расписания и количества водителей.
-    """
+def initialize_population(size):
+    return [generate_individual() for _ in range(size)]
+
+
+def generate_individual():
+    length = random.randint(min_individual_size, max_individual_size)
+    return [random.choice([0, 1]) for _ in range(length)]
+
+
+def display_schedule(bus_schedule):
     table = []
     for day, routes in bus_schedule.items():
         table.append([f"=== {day.upper()} ===", "", "", ""])
         for route in routes:
             table.append([
-                f"Водитель: {route.driver_id or 'Свободно'}",
+                f"Водитель: {route.driver_id}",
                 f"Начало: {route.start.strftime('%H:%M')}",
                 f"Конец: {route.end.strftime('%H:%M')}",
-                f"Автобус: {route.bus_id or 'Свободно'}"
+                f"Автобус: {route.bus_id}"
             ])
         table.append(["", "", "", ""])
 
     print(tabulate(table, headers=["Водитель", "Начало", "Конец", "Автобус"], tablefmt="grid"))
-    print(f"\nОптимальное количество водителей: {num_drivers}")
 
 
-# Основная программа
-initial_schedule = create_bus_schedule()
-optimized_schedule, optimal_drivers = genetic_algorithm(initial_schedule)
-display_schedule(optimized_schedule, optimal_drivers)
+# Запуск ген алгоритма и вывод расписания
+bus_schedule = create_bus_schedule()
+best_individual = genetic_algorithm()
+print(best_individual)
+print("Количество водителей:", len(best_individual))
+bus_schedule = create_schedule(bus_schedule, best_individual)
+display_schedule(bus_schedule)
