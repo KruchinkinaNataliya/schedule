@@ -30,7 +30,6 @@ class Route:
         self.is_free = True
         self.bus_id = None
         self.driver_id = None
-        self.next_day_route = None
 
     def take_route(self, bus_id, driver_id):
         self.is_free = False
