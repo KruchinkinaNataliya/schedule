@@ -203,16 +203,6 @@ def fitness(individual):
     return occupied_routes - penalty
 
 
-def sum_all_routes():
-    cnt = 0
-    for day, routes in create_bus_schedule().items():
-        for _ in routes:
-            cnt += 1
-    return cnt
-
-
-all_routes_count = sum_all_routes()
-
 base_schedule = create_bus_schedule()  # Кэшируемое расписание для более быстрого выполнения
 
 
